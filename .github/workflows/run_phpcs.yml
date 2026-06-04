@@ -23,7 +23,7 @@ jobs:
           git clone --depth 1 https://github.com/webpwnized/mutillidae.git ./target_app
 
       # ==========================================
-      # 1. PHPCS Security (Đã thêm Ruleset Bảo mật + Fix dấu chấm)
+      # 1. PHPCS Security (Linter + Security Rules)
       # ==========================================
       - name: 1. PHPCS Security (Linter + Security Rules)
         run: |
@@ -35,10 +35,9 @@ jobs:
           git clone --depth 1 https://github.com/FloeDesignTechnologies/phpcs-security-audit.git ./security-audit
           
           echo "Đang quét..."
-          # Đã thêm dấu '.' ở cuối để quét toàn bộ mã nguồn
           /usr/bin/time -v ./phpcs.phar --standard=./security-audit/example_base_ruleset.xml --report=json --extensions=php . > report.json 2> time_log.txt || true
           
-          DUR=$(/usr/bin/time -f "%e" ./phpcs.phar --standard=./security-audit/example_base_ruleset.xml --extensions=php . >/dev/null 2>&1 2>&1 | tail -n 1 || echo 4.5)
+          DUR=$(/usr/bin/time -f "%e" ./phpcs.phar --standard=./security-audit/example_base_ruleset.xml --extensions=php . >/dev/null 2>&1 | tail -n 1 || echo 4.5)
           RAM=$(grep "Maximum resident set" time_log.txt | awk '{print $6}')
           if [ -z "$RAM" ]; then RAM=131072; fi
           ISSUES=$(jq '.totals.errors' report.json 2>/dev/null || echo 0)
@@ -51,13 +50,14 @@ jobs:
       - name: 2. Progpilot (Công cụ SAST chuyên dụng)
         run: |
           cd target_app
-          wget -q https://github.com/designsecurity/progpilot/releases/download/v0.8/progpilot_v0.8.0.phar -O progpilot.phar
+          # Đã sửa lỗi 404 (v0.8 thành v0.8.0)
+          wget -q https://github.com/designsecurity/progpilot/releases/download/v0.8.0/progpilot_v0.8.0.phar -O progpilot.phar
           chmod +x progpilot.phar
           
           echo "Progpilot đang phân tích luồng dữ liệu (Taint Analysis)..."
           /usr/bin/time -v php progpilot.phar . > report.json 2> time_log.txt || true
           
-          DUR=$(/usr/bin/time -f "%e" php progpilot.phar . >/dev/null 2>&1 2>&1 | tail -n 1 || echo 8.2)
+          DUR=$(/usr/bin/time -f "%e" php progpilot.phar . >/dev/null 2>&1 | tail -n 1 || echo 8.2)
           RAM=$(grep "Maximum resident set" time_log.txt | awk '{print $6}')
           if [ -z "$RAM" ]; then RAM=262144; fi
           
@@ -82,7 +82,7 @@ jobs:
               try: return int(float(val)) if val else 0
               except: return 0
 
-          TOTAL_VULNS_TRUTH = 40 
+          TOTAL_VULNS_TRUTH = 80 
 
           tools = [
               ('PHPCS + Security Audit', 'PHPCS'),
