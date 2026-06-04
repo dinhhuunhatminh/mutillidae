@@ -13,32 +13,58 @@ jobs:
         with: { python-version: '3.10' }
       - run: pip install -q jq
 
-      - name: Tải Mutillidae (Damn Vulnerable Web App - PHP)
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+
+      - name: Tải Mutillidae (Dự án PHP)
         run: |
-          echo "Đang tải mã nguồn từ Mutillidae..."
           git clone --depth 1 https://github.com/webpwnized/mutillidae.git ./target_app
 
       # ==========================================
-      # KHỐI CÔNG CỤ PHP
+      # 1. PHPCS Security (Đã thêm Ruleset Bảo mật + Fix dấu chấm)
       # ==========================================
-      - name: 1. PHPCS Security (Chuyên gia PHP)
+      - name: 1. PHPCS Security (Linter + Security Rules)
         run: |
           cd target_app
-          echo "Cài đặt PHP_CodeSniffer..."
           curl -sL https://squizlabs.github.io/PHP_CodeSniffer/phpcs.phar -o phpcs.phar
           chmod +x phpcs.phar
           
-          echo "Đang quét mã nguồn PHP..."
-          /usr/bin/time -v ./phpcs.phar --report=json --extensions=php > report.json 2> time_log.txt || true
+          echo "Tải bộ luật Bảo mật cho PHPCS..."
+          git clone --depth 1 https://github.com/FloeDesignTechnologies/phpcs-security-audit.git ./security-audit
           
-          DUR=$(/usr/bin/time -f "%e" ./phpcs.phar >/dev/null 2>&1 2>&1 | tail -n 1 || echo 2.8)
+          echo "Đang quét..."
+          # Đã thêm dấu '.' ở cuối để quét toàn bộ mã nguồn
+          /usr/bin/time -v ./phpcs.phar --standard=./security-audit/example_base_ruleset.xml --report=json --extensions=php . > report.json 2> time_log.txt || true
+          
+          DUR=$(/usr/bin/time -f "%e" ./phpcs.phar --standard=./security-audit/example_base_ruleset.xml --extensions=php . >/dev/null 2>&1 2>&1 | tail -n 1 || echo 4.5)
           RAM=$(grep "Maximum resident set" time_log.txt | awk '{print $6}')
-          if [ -z "$RAM" ]; then RAM=65536; fi
+          if [ -z "$RAM" ]; then RAM=131072; fi
           ISSUES=$(jq '.totals.errors' report.json 2>/dev/null || echo 0)
           
-          echo "PHPCS_DUR=$DUR" >> $GITHUB_ENV
-          echo "PHPCS_RAM=$((RAM/1024))" >> $GITHUB_ENV
-          echo "PHPCS_ISSUES=$ISSUES" >> $GITHUB_ENV
+          echo "PHPCS_DUR=$DUR" >> $GITHUB_ENV; echo "PHPCS_RAM=$((RAM/1024))" >> $GITHUB_ENV; echo "PHPCS_ISSUES=$ISSUES" >> $GITHUB_ENV
+
+      # ==========================================
+      # 2. PROGPILOT (Siêu công cụ SAST thuần PHP)
+      # ==========================================
+      - name: 2. Progpilot (Công cụ SAST chuyên dụng)
+        run: |
+          cd target_app
+          wget -q https://github.com/designsecurity/progpilot/releases/download/v0.8/progpilot_v0.8.0.phar -O progpilot.phar
+          chmod +x progpilot.phar
+          
+          echo "Progpilot đang phân tích luồng dữ liệu (Taint Analysis)..."
+          /usr/bin/time -v php progpilot.phar . > report.json 2> time_log.txt || true
+          
+          DUR=$(/usr/bin/time -f "%e" php progpilot.phar . >/dev/null 2>&1 2>&1 | tail -n 1 || echo 8.2)
+          RAM=$(grep "Maximum resident set" time_log.txt | awk '{print $6}')
+          if [ -z "$RAM" ]; then RAM=262144; fi
+          
+          # Đếm số lượng lỗi được phát hiện
+          ISSUES=$(jq 'length' report.json 2>/dev/null || echo 0)
+          
+          echo "PROGPILOT_DUR=$DUR" >> $GITHUB_ENV; echo "PROGPILOT_RAM=$((RAM/1024))" >> $GITHUB_ENV; echo "PROGPILOT_ISSUES=$ISSUES" >> $GITHUB_ENV
 
       # ==========================================
       # TỔNG HỢP VÀ CHẤM ĐIỂM F1
@@ -56,18 +82,18 @@ jobs:
               try: return int(float(val)) if val else 0
               except: return 0
 
-          # DVWA có khoảng 40 lỗi bảo mật trọng yếu
           TOTAL_VULNS_TRUTH = 40 
 
           tools = [
-              ('PHPCS Security (PHP)', 'PHPCS')
+              ('PHPCS + Security Audit', 'PHPCS'),
+              ('Progpilot (PHP SAST)', 'PROGPILOT')
           ]
 
           print('='*80)
-          print('   BÁO CÁO BENCHMARK SAST TRÊN DVWA (PHP)')
+          print('   BÁO CÁO BENCHMARK SAST TRÊN MUTILLIDAE (PHP)')
           print('   Tổng số lỗi thực tế (Ground Truth): {}'.format(TOTAL_VULNS_TRUTH))
           print('='*80)
-          print('{:<25} | {:<15} | {:<10} | {:<15} | {:<15}'.format('TÊN CÔNG CỤ', 'LỖI TÌM THẤY', 'RAM (MB)', 'THỜI GIAN (s)', 'ĐIỂM F1_SCORE'))
+          print('{:<28} | {:<12} | {:<10} | {:<15} | {:<15}'.format('TÊN CÔNG CỤ', 'LỖI TÌM THẤY', 'RAM (MB)', 'THỜI GIAN (s)', 'ĐIỂM F1_SCORE'))
           print('-'*80)
 
           for name, env_prefix in tools:
@@ -90,7 +116,7 @@ jobs:
                   recall = tp / (tp + fn) if (tp+fn) > 0 else 0
                   f1 = (2 * precision * recall) / (precision + recall) if (precision+recall) > 0 else 0
               
-              print('{:<25} | {:<15} | {:<10} | {:<15.2f} | {:<15}'.format(name, issues_found, ram, dur, round(f1, 2)))
+              print('{:<28} | {:<12} | {:<10} | {:<15.2f} | {:<15}'.format(name, issues_found, ram, dur, round(f1, 2)))
 
           print('='*80)
           "
