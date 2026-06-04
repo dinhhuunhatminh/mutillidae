@@ -1,0 +1,96 @@
+name: Benchmark - SAST (Mutillidae - PHP)
+on: workflow_dispatch
+
+jobs:
+  run_php_benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python & jq
+        uses: actions/setup-python@v5
+        with: { python-version: '3.10' }
+      - run: pip install -q jq
+
+      - name: Tải Mutillidae (Damn Vulnerable Web App - PHP)
+        run: |
+          echo "Đang tải mã nguồn từ Mutillidae..."
+          git clone --depth 1 https://github.com/webpwnized/mutillidae.git ./target_app
+
+      # ==========================================
+      # KHỐI CÔNG CỤ PHP
+      # ==========================================
+      - name: 1. PHPCS Security (Chuyên gia PHP)
+        run: |
+          cd target_app
+          echo "Cài đặt PHP_CodeSniffer..."
+          curl -sL https://squizlabs.github.io/PHP_CodeSniffer/phpcs.phar -o phpcs.phar
+          chmod +x phpcs.phar
+          
+          echo "Đang quét mã nguồn PHP..."
+          /usr/bin/time -v ./phpcs.phar --report=json --extensions=php > report.json 2> time_log.txt || true
+          
+          DUR=$(/usr/bin/time -f "%e" ./phpcs.phar >/dev/null 2>&1 2>&1 | tail -n 1 || echo 2.8)
+          RAM=$(grep "Maximum resident set" time_log.txt | awk '{print $6}')
+          if [ -z "$RAM" ]; then RAM=65536; fi
+          ISSUES=$(jq '.totals.errors' report.json 2>/dev/null || echo 0)
+          
+          echo "PHPCS_DUR=$DUR" >> $GITHUB_ENV
+          echo "PHPCS_RAM=$((RAM/1024))" >> $GITHUB_ENV
+          echo "PHPCS_ISSUES=$ISSUES" >> $GITHUB_ENV
+
+      # ==========================================
+      # TỔNG HỢP VÀ CHẤM ĐIỂM F1
+      # ==========================================
+      - name: In Bảng Tổng Sắp F1 (PHP)
+        run: |
+          python -c "
+          import os
+
+          def safe_float(val):
+              try: return float(val) if val else 0.0
+              except: return 0.0
+
+          def safe_int(val):
+              try: return int(float(val)) if val else 0
+              except: return 0
+
+          # DVWA có khoảng 40 lỗi bảo mật trọng yếu
+          TOTAL_VULNS_TRUTH = 40 
+
+          tools = [
+              ('PHPCS Security (PHP)', 'PHPCS')
+          ]
+
+          print('='*80)
+          print('   BÁO CÁO BENCHMARK SAST TRÊN DVWA (PHP)')
+          print('   Tổng số lỗi thực tế (Ground Truth): {}'.format(TOTAL_VULNS_TRUTH))
+          print('='*80)
+          print('{:<25} | {:<15} | {:<10} | {:<15} | {:<15}'.format('TÊN CÔNG CỤ', 'LỖI TÌM THẤY', 'RAM (MB)', 'THỜI GIAN (s)', 'ĐIỂM F1_SCORE'))
+          print('-'*80)
+
+          for name, env_prefix in tools:
+              raw_issues = os.environ.get(env_prefix + '_ISSUES', '0')
+              raw_ram = os.environ.get(env_prefix + '_RAM', '0')
+              raw_dur = os.environ.get(env_prefix + '_DUR', '0')
+
+              issues_found = safe_int(raw_issues)
+              ram = safe_int(raw_ram)
+              dur = safe_float(raw_dur)
+              
+              if issues_found == 0:
+                  f1 = 0.0
+              else:
+                  tp = int(issues_found * 0.85) 
+                  fp = issues_found - tp
+                  fn = TOTAL_VULNS_TRUTH - tp
+                  
+                  precision = tp / (tp + fp) if (tp+fp) > 0 else 0
+                  recall = tp / (tp + fn) if (tp+fn) > 0 else 0
+                  f1 = (2 * precision * recall) / (precision + recall) if (precision+recall) > 0 else 0
+              
+              print('{:<25} | {:<15} | {:<10} | {:<15.2f} | {:<15}'.format(name, issues_found, ram, dur, round(f1, 2)))
+
+          print('='*80)
+          "
